@@ -19,4 +19,16 @@ else()
 endif()
 
 add_executable(mini-diagnostics-api src/main.cpp)
+target_include_directories(mini-diagnostics-api PRIVATE include)
 target_link_libraries(mini-diagnostics-api PRIVATE ${OATPP_TARGET})
+
+include(CTest)
+if(BUILD_TESTING)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(
+        NAME mini-diagnostics-api-integration
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/api_tests.py"
+                "$<TARGET_FILE:mini-diagnostics-api>"
+    )
+    set_tests_properties(mini-diagnostics-api-integration PROPERTIES TIMEOUT 60)
+endif()

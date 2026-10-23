@@ -1,21 +1,25 @@
 # Mini Diagnostics API
 
-A small C++14 REST API using oat++ 1.3.x and simulated vehicle data. This is a learning project, not a SOVD-compliant implementation. 
+A small C++14 REST API using oat++ 1.3.x and simulated vehicle data. 
 
 ## Files
 
 - [CMakeLists.txt](CMakeLists.txt): build configuration.
-- [src/main.cpp](src/main.cpp): ECU and error DTOs, in-memory data, HTTP endpoints, and server startup.
+- [include/ecu_dto.hpp](include/ecu_dto.hpp): DTOs that define ECU and error JSON shapes.
+- [include/diagnostics_controller.hpp](include/diagnostics_controller.hpp): routes, validation, and in-memory ECU operations.
+- [src/main.cpp](src/main.cpp): server startup and wiring.
+- [tests/api_tests.py](tests/api_tests.py): automated HTTP integration tests.
 
 ## Build
 
-Requirements: CMake 3.22+, a C++14 compiler, and oat++ 1.3.x. No database, real vehicle, or network download is needed when using the oat++ source already available in this workspace.
+Requirements: CMake 3.22+, a C++14 compiler, oat++ 1.3.x, and Python 3 for the API tests. No database, real vehicle, or network download is needed when using the oat++ source already available in this workspace.
 
 From this directory:
 
 ```sh
 cmake -S . -B build -DOATPP_SOURCE_DIR="$(cd ../external/oatpp && pwd)"
 cmake --build build --parallel 2
+python3 tests/api_tests.py ./build/mini-diagnostics-api
 ```
 
 If you move the project, pass the absolute path to your oat++ source instead. Alternatively, with an installed oat++ package, omit `OATPP_SOURCE_DIR` and set `CMAKE_PREFIX_PATH` to its installation prefix if necessary. Use a fresh build directory when switching dependency sources.
@@ -116,10 +120,46 @@ Use `18080` in the following examples. If you started the server on the default 
 
 Created data is held in memory, so it is available while this server process is running and is reset when the server restarts.
 
+## Phase 3: replace and delete ECU resources
+
+`PUT` replaces an existing ECU. The ID in the URL must match the ID in the JSON body. A valid replacement returns `200 OK`; invalid input returns `400 Bad Request`, and a resource that does not exist returns `404 Not Found`.
+
+```sh
+curl -i -X PUT http://127.0.0.1:18080/api/v1/ecus/engine \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"engine","name":"Updated Engine Controller","status":"offline","firmwareVersion":"2.0.0"}'
+```
+
+`DELETE` removes an existing ECU. Success returns `204 No Content` with no body; deleting an unknown ID returns `404 Not Found`.
+
+```sh
+curl -i -X DELETE http://127.0.0.1:18080/api/v1/ecus/engine
+```
+
+These operations use the same in-memory collection as `GET` and `POST`. Changes disappear when the server restarts.
+
+## Automated tests
+
+The integration tests launch the API on an available local port and send real HTTP requests. They cover listing, retrieving, creating, replacing, and deleting ECUs, including validation and not-found/conflict responses.
+
+```sh
+python3 tests/api_tests.py ./build/mini-diagnostics-api
+```
+
+The tests are also registered with CTest and can be run from a CMake-aware IDE.
+
+## Project structure
+
+- `include/ecu_dto.hpp` describes the JSON data types.
+- `include/diagnostics_controller.hpp` contains the API routes and ECU collection logic.
+- `src/main.cpp` initializes oat++ and wires the server components together.
+- `tests/api_tests.py` verifies the public HTTP behavior without needing another test framework.
+
 ## What this demonstrates
 
 - `GET` reads the collection or an individual resource.
 - `POST` creates a resource from a JSON request body.
+- `PUT` replaces an existing resource; `DELETE` removes one.
 - Path parameters identify a resource; the request body carries new resource data.
 - The in-memory map keeps endpoints working against the same collection.
 - HTTP status codes communicate success and failure.

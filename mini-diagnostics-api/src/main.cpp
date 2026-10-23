@@ -116,6 +116,51 @@ public:
         return response;
     }
 
+    ENDPOINT("PUT", "/api/v1/ecus/{id}", replaceEcu, PATH(String, id),
+             BODY_DTO(oatpp::Object<EcuDto>, requestEcu))
+    {
+        if (!requestEcu || !requestEcu->id || requestEcu->id->empty() || !requestEcu->name ||
+            requestEcu->name->empty() || !requestEcu->status || requestEcu->status->empty()) {
+            return createErrorResponse(Status::CODE_400,
+                                       "id, name, and status must be non-empty strings");
+        }
+        if (*requestEcu->id != *id) {
+            return createErrorResponse(Status::CODE_400, "body id must match path id");
+        }
+        if (!hasValidIdCharacters(*id)) {
+            return createErrorResponse(Status::CODE_400,
+                                       "id may contain only letters, digits, '-' and '_'");
+        }
+        if (*requestEcu->status != "online" && *requestEcu->status != "offline" &&
+            *requestEcu->status != "unknown") {
+            return createErrorResponse(Status::CODE_400,
+                                       "status must be online, offline, or unknown");
+        }
+
+        {
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            const auto found = m_ecus.find(*id);
+            if (found == m_ecus.end()) {
+                return createErrorResponse(Status::CODE_404, "ECU not found");
+            }
+            found->second = requestEcu;
+        }
+        return createDtoResponse(Status::CODE_200, requestEcu);
+    }
+
+    ENDPOINT("DELETE", "/api/v1/ecus/{id}", deleteEcu, PATH(String, id))
+    {
+        {
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            const auto found = m_ecus.find(*id);
+            if (found == m_ecus.end()) {
+                return createErrorResponse(Status::CODE_404, "ECU not found");
+            }
+            m_ecus.erase(found);
+        }
+        return createResponse(Status::CODE_204, "");
+    }
+
 private:
     static oatpp::Object<EcuDto> makeEcu(const std::string& id, const std::string& name,
                                          const std::string& firmwareVersion)
