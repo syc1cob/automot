@@ -1,0 +1,11 @@
+/external/
+/mini-diagnostics-api.tar
+
+build/
+build-wsl/
+build-*/
+cmake-build-*/
+
+*.o
+*.a
+*.so
