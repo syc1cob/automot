@@ -1,0 +1,205 @@
+openapi: 3.0.3
+info:
+  title: Mini Diagnostics API
+  version: 1.0.0
+  description: A learning REST API for simulated vehicle ECUs. This is not a SOVD-compliant implementation.
+servers:
+  - url: http://127.0.0.1:8080
+    description: Local development server (use the port passed at startup if changed)
+tags:
+  - name: ECUs
+    description: Simulated electronic control units
+paths:
+  /api/v1/ecus:
+    get:
+      tags: [ECUs]
+      summary: List all ECUs
+      operationId: listEcus
+      responses:
+        '200':
+          description: ECU collection
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Ecu'
+              example:
+                - id: battery
+                  name: Battery Controller
+                  status: online
+                  firmwareVersion: 1.0.0
+                - id: engine
+                  name: Engine Controller
+                  status: online
+                  firmwareVersion: 1.0.0
+        '500':
+          $ref: '#/components/responses/DatabaseError'
+    post:
+      tags: [ECUs]
+      summary: Create an ECU
+      operationId: createEcu
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Ecu'
+            example:
+              id: brake
+              name: Brake Controller
+              status: online
+              firmwareVersion: 1.0.0
+      responses:
+        '201':
+          description: ECU created
+          headers:
+            Location:
+              description: URL of the created ECU
+              schema:
+                type: string
+              example: /api/v1/ecus/brake
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ecu'
+              example:
+                id: brake
+                name: Brake Controller
+                status: online
+                firmwareVersion: 1.0.0
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: An ECU with this ID already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: ECU ID already exists
+        '500':
+          $ref: '#/components/responses/DatabaseError'
+  /api/v1/ecus/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: ECU identifier; letters, digits, hyphens, and underscores are allowed
+        schema:
+          type: string
+        example: engine
+    get:
+      tags: [ECUs]
+      summary: Retrieve an ECU
+      operationId: getEcu
+      responses:
+        '200':
+          description: ECU resource
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ecu'
+              example:
+                id: engine
+                name: Engine Controller
+                status: online
+                firmwareVersion: 1.0.0
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/DatabaseError'
+    put:
+      tags: [ECUs]
+      summary: Replace an ECU
+      operationId: replaceEcu
+      description: Replaces an existing ECU. The body ID must match the path ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Ecu'
+            example:
+              id: engine
+              name: Updated Engine Controller
+              status: offline
+              firmwareVersion: 2.0.0
+      responses:
+        '200':
+          description: ECU replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ecu'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/DatabaseError'
+    delete:
+      tags: [ECUs]
+      summary: Delete an ECU
+      operationId: deleteEcu
+      responses:
+        '204':
+          description: ECU deleted; response has no body
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/DatabaseError'
+components:
+  schemas:
+    Ecu:
+      type: object
+      required: [id, name, status]
+      properties:
+        id:
+          type: string
+          pattern: '^[A-Za-z0-9_-]+$'
+          example: engine
+        name:
+          type: string
+          minLength: 1
+          example: Engine Controller
+        status:
+          type: string
+          enum: [online, offline, unknown]
+          example: online
+        firmwareVersion:
+          type: string
+          nullable: true
+          example: 1.0.0
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: ECU not found
+  responses:
+    BadRequest:
+      description: Request body is invalid or does not match the path resource
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: id, name, and status must be non-empty strings
+    NotFound:
+      description: ECU does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: ECU not found
+    DatabaseError:
+      description: Database operation failed; server logs contain diagnostic details
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: Database operation failed

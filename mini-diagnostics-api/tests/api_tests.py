@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Black-box integration tests for the Mini Diagnostics API.
 
-The tests start a fresh server on an available local port, send real HTTP
-requests, and check status codes, headers, JSON responses, and CRUD behavior.
-Each test gets its own server process, so in-memory ECU changes do not leak
-between tests. The server is stopped after each test.
+The tests start a fresh server on an available local port with a temporary
+SQLite database, send real HTTP requests, and check status codes, headers,
+JSON responses, CRUD behavior, and persistence across a server restart. Each
+test gets its own database so changes do not leak between tests.
 
 Run from the project directory with:
     python3 tests/api_tests.py ./build/mini-diagnostics-api
@@ -14,6 +14,7 @@ import json
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 import urllib.error
@@ -26,9 +27,14 @@ class ApiIntegrationTests(unittest.TestCase):
             sock.bind(("127.0.0.1", 0))
             self.port = sock.getsockname()[1]
 
+        self.database_directory = tempfile.TemporaryDirectory()
+        self.database_path = f"{self.database_directory.name}/ecus.db"
         self.base_url = f"http://127.0.0.1:{self.port}/api/v1/ecus"
+        self.start_server()
+
+    def start_server(self):
         self.server = subprocess.Popen(
-            [sys.argv[1], str(self.port)],
+            [sys.argv[1], str(self.port), self.database_path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -56,6 +62,7 @@ class ApiIntegrationTests(unittest.TestCase):
 
     def tearDown(self):
         self.stop_server()
+        self.database_directory.cleanup()
 
     def request(self, method, path, body=None):
         data = None if body is None else json.dumps(body).encode("utf-8")
@@ -163,6 +170,29 @@ class ApiIntegrationTests(unittest.TestCase):
 
     def test_delete_unknown_ecu_returns_not_found(self):
         status, _, payload = self.request("DELETE", "/not-real")
+        self.assertEqual(status, 404)
+        self.assertEqual(payload, {"error": "ECU not found"})
+
+    def test_changes_persist_after_server_restart(self):
+        created = self.ecu()
+        status, _, _ = self.request("POST", "", created)
+        self.assertEqual(status, 201)
+
+        replacement = self.ecu("brake", "Updated Brake Controller", "offline")
+        status, _, _ = self.request("PUT", "/brake", replacement)
+        self.assertEqual(status, 200)
+
+        status, _, _ = self.request("DELETE", "/engine")
+        self.assertEqual(status, 204)
+
+        self.stop_server()
+        self.start_server()
+
+        status, _, payload = self.request("GET", "/brake")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, replacement)
+
+        status, _, payload = self.request("GET", "/engine")
         self.assertEqual(status, 404)
         self.assertEqual(payload, {"error": "ECU not found"})
 

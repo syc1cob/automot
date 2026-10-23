@@ -1,38 +1,37 @@
 #pragma once
 
-#include "ecu_dto.hpp"
+#include "ecu_repository.hpp"
 #include "oatpp/core/macro/codegen.hpp"
 #include "oatpp/web/server/api/ApiController.hpp"
 
 #include <algorithm>
 #include <cctype>
-#include <map>
+#include <exception>
+#include <iostream>
 #include <memory>
-#include <mutex>
 #include <string>
 
 #include OATPP_CODEGEN_BEGIN(ApiController)
 
 class DiagnosticsController : public oatpp::web::server::api::ApiController {
 public:
-    explicit DiagnosticsController(
-        const std::shared_ptr<oatpp::data::mapping::ObjectMapper>& objectMapper)
-        : ApiController(objectMapper)
+    DiagnosticsController(const std::shared_ptr<oatpp::data::mapping::ObjectMapper>& objectMapper,
+                          const std::shared_ptr<EcuRepository>& repository)
+        : ApiController(objectMapper), m_repository(repository)
     {
-        // Seed the in-memory collection with sample resources for this demo.
-        m_ecus.emplace("engine", makeEcu("engine", "Engine Controller", "1.0.0"));
-        m_ecus.emplace("battery", makeEcu("battery", "Battery Controller", "1.0.0"));
     }
 
-    // Collection route: return all ECU resources currently in memory.
+    // Collection route: return all ECU resources stored in SQLite.
     ENDPOINT("GET", "/api/v1/ecus", listEcus)
     {
         auto ecus = oatpp::Vector<oatpp::Object<EcuDto>>::createShared();
-        {
-            const std::lock_guard<std::mutex> lock(m_mutex);
-            for (const auto& entry : m_ecus) {
-                ecus->push_back(entry.second);
+        try {
+            for (const auto& ecu : m_repository->list()) {
+                ecus->push_back(ecu);
             }
+        }
+        catch (const std::exception& error) {
+            return createDatabaseErrorResponse(error);
         }
         return createDtoResponse(Status::CODE_200, ecus);
     }
@@ -41,12 +40,11 @@ public:
     ENDPOINT("GET", "/api/v1/ecus/{id}", getEcu, PATH(String, id))
     {
         oatpp::Object<EcuDto> ecu;
-        {
-            const std::lock_guard<std::mutex> lock(m_mutex);
-            const auto found = m_ecus.find(*id);
-            if (found != m_ecus.end()) {
-                ecu = found->second;
-            }
+        try {
+            ecu = m_repository->findById(*id);
+        }
+        catch (const std::exception& error) {
+            return createDatabaseErrorResponse(error);
         }
         if (!ecu) {
             return createErrorResponse(Status::CODE_404, "ECU not found");
@@ -62,16 +60,14 @@ public:
             return createErrorResponse(Status::CODE_400, validationError);
         }
 
-        bool alreadyExists = false;
-        {
-            // Check and insert under one lock to prevent duplicate IDs in concurrent requests.
-            const std::lock_guard<std::mutex> lock(m_mutex);
-            alreadyExists = m_ecus.find(*requestEcu->id) != m_ecus.end();
-            if (!alreadyExists) {
-                m_ecus.emplace(*requestEcu->id, requestEcu);
-            }
+        bool created = false;
+        try {
+            created = m_repository->create(requestEcu);
         }
-        if (alreadyExists) {
+        catch (const std::exception& error) {
+            return createDatabaseErrorResponse(error);
+        }
+        if (!created) {
             return createErrorResponse(Status::CODE_409, "ECU ID already exists");
         }
 
@@ -93,16 +89,14 @@ public:
             return createErrorResponse(Status::CODE_400, "body id must match path id");
         }
 
-        bool foundEcu = false;
-        {
-            const std::lock_guard<std::mutex> lock(m_mutex);
-            const auto found = m_ecus.find(*id);
-            if (found != m_ecus.end()) {
-                found->second = requestEcu;
-                foundEcu = true;
-            }
+        bool replaced = false;
+        try {
+            replaced = m_repository->replace(requestEcu);
         }
-        if (!foundEcu) {
+        catch (const std::exception& error) {
+            return createDatabaseErrorResponse(error);
+        }
+        if (!replaced) {
             return createErrorResponse(Status::CODE_404, "ECU not found");
         }
         return createDtoResponse(Status::CODE_200, requestEcu);
@@ -112,28 +106,19 @@ public:
     ENDPOINT("DELETE", "/api/v1/ecus/{id}", deleteEcu, PATH(String, id))
     {
         bool deleted = false;
-        {
-            const std::lock_guard<std::mutex> lock(m_mutex);
-            deleted = m_ecus.erase(*id) != 0;
+        try {
+            deleted = m_repository->remove(*id);
+        }
+        catch (const std::exception& error) {
+            return createDatabaseErrorResponse(error);
         }
         if (!deleted) {
             return createErrorResponse(Status::CODE_404, "ECU not found");
         }
-        return createResponse(Status::CODE_204);
+        return createResponse(Status::CODE_204, "");
     }
 
 private:
-    static oatpp::Object<EcuDto> makeEcu(const std::string& id, const std::string& name,
-                                         const std::string& firmwareVersion)
-    {
-        auto ecu = EcuDto::createShared();
-        ecu->id = id;
-        ecu->name = name;
-        ecu->status = "online";
-        ecu->firmwareVersion = firmwareVersion;
-        return ecu;
-    }
-
     // Validate fields shared by both POST and PUT requests.
     static std::string validateEcu(const oatpp::Object<EcuDto>& ecu)
     {
@@ -144,8 +129,7 @@ private:
         if (!hasValidIdCharacters(*ecu->id)) {
             return "id may contain only letters, digits, '-' and '_'";
         }
-        if (*ecu->status != "online" && *ecu->status != "offline" &&
-            *ecu->status != "unknown") {
+        if (*ecu->status != "online" && *ecu->status != "offline" && *ecu->status != "unknown") {
             return "status must be online, offline, or unknown";
         }
         return {};
@@ -159,17 +143,20 @@ private:
         });
     }
 
-    std::shared_ptr<OutgoingResponse> createErrorResponse(Status status,
-                                                          const std::string& message)
+    std::shared_ptr<OutgoingResponse> createErrorResponse(Status status, const std::string& message)
     {
         auto error = ErrorDto::createShared();
         error->error = message;
         return createDtoResponse(status, error);
     }
 
-    // Demo storage: data is shared by endpoints but lost when the server stops.
-    std::map<std::string, oatpp::Object<EcuDto>> m_ecus;
-    std::mutex m_mutex;
+    std::shared_ptr<OutgoingResponse> createDatabaseErrorResponse(const std::exception& error)
+    {
+        std::cerr << "Database operation failed: " << error.what() << std::endl;
+        return createErrorResponse(Status::CODE_500, "Database operation failed");
+    }
+
+    std::shared_ptr<EcuRepository> m_repository;
 };
 
 #include OATPP_CODEGEN_END(ApiController)

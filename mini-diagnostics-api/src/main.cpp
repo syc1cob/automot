@@ -1,207 +1,26 @@
+#include "diagnostics_controller.hpp"
 #include "oatpp/core/base/Environment.hpp"
-#include "oatpp/core/macro/codegen.hpp"
 #include "oatpp/network/Server.hpp"
 #include "oatpp/network/tcp/server/ConnectionProvider.hpp"
 #include "oatpp/parser/json/mapping/ObjectMapper.hpp"
 #include "oatpp/web/server/HttpConnectionHandler.hpp"
 #include "oatpp/web/server/HttpRouter.hpp"
-#include "oatpp/web/server/api/ApiController.hpp"
 
-#include <algorithm>
-#include <cctype>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
-#include <map>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <vector>
 
-#include OATPP_CODEGEN_BEGIN(DTO)
-
-// Defines the JSON shape shared by ECU responses and POST request bodies.
-class EcuDto : public oatpp::DTO {
-    DTO_INIT(EcuDto, DTO)
-
-    DTO_FIELD(String, id);
-    DTO_FIELD(String, name);
-    DTO_FIELD(String, status);
-    DTO_FIELD(String, firmwareVersion);
-};
-
-// Keeps API error responses in a consistent JSON format.
-class ErrorDto : public oatpp::DTO {
-    DTO_INIT(ErrorDto, DTO)
-
-    DTO_FIELD(String, error);
-};
-
-#include OATPP_CODEGEN_END(DTO)
-
-#include OATPP_CODEGEN_BEGIN(ApiController)
-
-class DiagnosticsController : public oatpp::web::server::api::ApiController {
-public:
-    explicit DiagnosticsController(
-        const std::shared_ptr<oatpp::data::mapping::ObjectMapper>& objectMapper)
-        : ApiController(objectMapper)
-    {
-        // Seed the in-memory collection with sample resources for this demo.
-        m_ecus.emplace("engine", makeEcu("engine", "Engine Controller", "1.0.0"));
-        m_ecus.emplace("battery", makeEcu("battery", "Battery Controller", "1.0.0"));
-    }
-
-    // Collection route: return all ECU resources currently in memory.
-    ENDPOINT("GET", "/api/v1/ecus", listEcus)
-    {
-        auto ecus = oatpp::Vector<oatpp::Object<EcuDto>>::createShared();
-        {
-            const std::lock_guard<std::mutex> lock(m_mutex);
-            for (const auto& entry : m_ecus) {
-                ecus->push_back(entry.second);
-            }
-        }
-        return createDtoResponse(Status::CODE_200, ecus);
-    }
-
-    // Item route: PATH extracts {id} from the URL so the handler can find one ECU.
-    ENDPOINT("GET", "/api/v1/ecus/{id}", getEcu, PATH(String, id))
-    {
-        oatpp::Object<EcuDto> ecu;
-        {
-            const std::lock_guard<std::mutex> lock(m_mutex);
-            const auto found = m_ecus.find(*id);
-            if (found != m_ecus.end()) {
-                ecu = found->second;
-            }
-        }
-        if (!ecu) {
-            return createErrorResponse(Status::CODE_404, "ECU not found");
-        }
-        return createDtoResponse(Status::CODE_200, ecu);
-    }
-
-    // Create route: oat++ parses the JSON request body into an EcuDto.
-    ENDPOINT("POST", "/api/v1/ecus", createEcu, BODY_DTO(oatpp::Object<EcuDto>, requestEcu))
-    {
-        // Reject missing fields and values before storing the new resource.
-        if (!requestEcu || !requestEcu->id || requestEcu->id->empty() || !requestEcu->name ||
-            requestEcu->name->empty() || !requestEcu->status || requestEcu->status->empty()) {
-            return createErrorResponse(Status::CODE_400,
-                                       "id, name, and status must be non-empty strings");
-        }
-        if (!hasValidIdCharacters(*requestEcu->id)) {
-            return createErrorResponse(Status::CODE_400,
-                                       "id may contain only letters, digits, '-' and '_'");
-        }
-        if (*requestEcu->status != "online" && *requestEcu->status != "offline" &&
-            *requestEcu->status != "unknown") {
-            return createErrorResponse(Status::CODE_400,
-                                       "status must be online, offline, or unknown");
-        }
-
-        {
-            // Check and insert under one lock to prevent duplicate IDs in concurrent requests.
-            const std::lock_guard<std::mutex> lock(m_mutex);
-            if (m_ecus.find(*requestEcu->id) != m_ecus.end()) {
-                return createErrorResponse(Status::CODE_409, "ECU ID already exists");
-            }
-            m_ecus.emplace(*requestEcu->id, requestEcu);
-        }
-
-        // 201 means a resource was created; Location identifies its new URL.
-        auto response = createDtoResponse(Status::CODE_201, requestEcu);
-        response->putHeader("Location", "/api/v1/ecus/" + *requestEcu->id);
-        return response;
-    }
-
-    ENDPOINT("PUT", "/api/v1/ecus/{id}", replaceEcu, PATH(String, id),
-             BODY_DTO(oatpp::Object<EcuDto>, requestEcu))
-    {
-        if (!requestEcu || !requestEcu->id || requestEcu->id->empty() || !requestEcu->name ||
-            requestEcu->name->empty() || !requestEcu->status || requestEcu->status->empty()) {
-            return createErrorResponse(Status::CODE_400,
-                                       "id, name, and status must be non-empty strings");
-        }
-        if (*requestEcu->id != *id) {
-            return createErrorResponse(Status::CODE_400, "body id must match path id");
-        }
-        if (!hasValidIdCharacters(*id)) {
-            return createErrorResponse(Status::CODE_400,
-                                       "id may contain only letters, digits, '-' and '_'");
-        }
-        if (*requestEcu->status != "online" && *requestEcu->status != "offline" &&
-            *requestEcu->status != "unknown") {
-            return createErrorResponse(Status::CODE_400,
-                                       "status must be online, offline, or unknown");
-        }
-
-        {
-            const std::lock_guard<std::mutex> lock(m_mutex);
-            const auto found = m_ecus.find(*id);
-            if (found == m_ecus.end()) {
-                return createErrorResponse(Status::CODE_404, "ECU not found");
-            }
-            found->second = requestEcu;
-        }
-        return createDtoResponse(Status::CODE_200, requestEcu);
-    }
-
-    ENDPOINT("DELETE", "/api/v1/ecus/{id}", deleteEcu, PATH(String, id))
-    {
-        {
-            const std::lock_guard<std::mutex> lock(m_mutex);
-            const auto found = m_ecus.find(*id);
-            if (found == m_ecus.end()) {
-                return createErrorResponse(Status::CODE_404, "ECU not found");
-            }
-            m_ecus.erase(found);
-        }
-        return createResponse(Status::CODE_204, "");
-    }
-
-private:
-    static oatpp::Object<EcuDto> makeEcu(const std::string& id, const std::string& name,
-                                         const std::string& firmwareVersion)
-    {
-        auto ecu = EcuDto::createShared();
-        ecu->id = id;
-        ecu->name = name;
-        ecu->status = "online";
-        ecu->firmwareVersion = firmwareVersion;
-        return ecu;
-    }
-
-    // Keep IDs URL-friendly by allowing only letters, digits, hyphens, and underscores.
-    static bool hasValidIdCharacters(const std::string& id)
-    {
-        return std::all_of(id.begin(), id.end(), [](unsigned char character) {
-            return std::isalnum(character) != 0 || character == '-' || character == '_';
-        });
-    }
-
-    std::shared_ptr<OutgoingResponse> createErrorResponse(Status status,
-                                                          const oatpp::String& message)
-    {
-        auto error = ErrorDto::createShared();
-        error->error = message;
-        return createDtoResponse(status, error);
-    }
-
-    // Demo storage: data is shared by endpoints but lost when the server stops.
-    std::map<std::string, oatpp::Object<EcuDto>> m_ecus;
-    std::mutex m_mutex;
-};
-
-#include OATPP_CODEGEN_END(ApiController)
+namespace {
 
 // Connect the JSON mapper, route table, HTTP handler, and local TCP listener.
-void runServer(v_uint16 port)
+void runServer(v_uint16 port, const std::string& databasePath)
 {
+    auto repository = std::make_shared<EcuRepository>(databasePath);
     auto objectMapper = oatpp::parser::json::mapping::ObjectMapper::createShared();
     auto router = oatpp::web::server::HttpRouter::createShared();
-    auto controller = std::make_shared<DiagnosticsController>(objectMapper);
+    auto controller = std::make_shared<DiagnosticsController>(objectMapper, repository);
     router->addController(controller);
 
     auto connectionHandler = oatpp::web::server::HttpConnectionHandler::createShared(router);
@@ -210,19 +29,22 @@ void runServer(v_uint16 port)
 
     oatpp::network::Server server(connectionProvider, connectionHandler);
     std::cout << "Mini Diagnostics API: http://127.0.0.1:" << port << "/api/v1/ecus\n"
+              << "SQLite database: " << databasePath << "\n"
               << "Press Ctrl+C to stop." << std::endl;
     server.run();
 }
 
+} // namespace
+
 int main(int argc, char* argv[])
 {
     v_uint16 port = 8080;
-    if (argc > 2) {
-        std::cerr << "Usage: mini-diagnostics-api [port]" << std::endl;
+    if (argc > 3) {
+        std::cerr << "Usage: mini-diagnostics-api [port] [database-file]" << std::endl;
         return 1;
     }
-    // Allow an alternate port for development when the default port is busy.
-    if (argc == 2) {
+    // Allow an alternate port and database file for local development and testing.
+    if (argc >= 2) {
         char* end = nullptr;
         const unsigned long parsedPort = std::strtoul(argv[1], &end, 10);
         if (end == argv[1] || *end != '\0' || parsedPort == 0 || parsedPort > 65535) {
@@ -231,12 +53,13 @@ int main(int argc, char* argv[])
         }
         port = static_cast<v_uint16>(parsedPort);
     }
+    const std::string databasePath = argc == 3 ? argv[2] : "ecus.db";
 
     // Initialize oat++ before creating framework objects; destroy it after the server exits.
     oatpp::base::Environment::init();
     int result = 0;
     try {
-        runServer(port);
+        runServer(port, databasePath);
     }
     catch (const std::exception& error) {
         std::cerr << "Server failed: " << error.what() << std::endl;

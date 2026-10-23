@@ -18,9 +18,14 @@ else()
     set(OATPP_TARGET oatpp::oatpp)
 endif()
 
-add_executable(mini-diagnostics-api src/main.cpp)
+find_package(SQLite3 REQUIRED)
+
+add_executable(mini-diagnostics-api
+    src/ecu_repository.cpp
+    src/main.cpp
+)
 target_include_directories(mini-diagnostics-api PRIVATE include)
-target_link_libraries(mini-diagnostics-api PRIVATE ${OATPP_TARGET})
+target_link_libraries(mini-diagnostics-api PRIVATE ${OATPP_TARGET} SQLite::SQLite3)
 
 include(CTest)
 if(BUILD_TESTING)

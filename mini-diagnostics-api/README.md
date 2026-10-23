@@ -1,28 +1,43 @@
 # Mini Diagnostics API
 
-A small C++14 REST API using oat++ 1.3.x and simulated vehicle data. 
+A small C++14 REST API using oat++ 1.3.x and simulated vehicle data. This is a learning project.
 
 ## Files
 
 - [CMakeLists.txt](CMakeLists.txt): build configuration.
 - [include/ecu_dto.hpp](include/ecu_dto.hpp): DTOs that define ECU and error JSON shapes.
-- [include/diagnostics_controller.hpp](include/diagnostics_controller.hpp): routes, validation, and in-memory ECU operations.
+- [include/diagnostics_controller.hpp](include/diagnostics_controller.hpp): routes, validation, and database error responses.
+- [include/ecu_repository.hpp](include/ecu_repository.hpp): interface for ECU persistence operations.
+- [src/ecu_repository.cpp](src/ecu_repository.cpp): SQLite schema, prepared statements, and data access.
 - [src/main.cpp](src/main.cpp): server startup and wiring.
-- [tests/api_tests.py](tests/api_tests.py): automated HTTP integration tests.
+- [tests/api_tests.py](tests/api_tests.py): automated HTTP integration tests, including restart persistence.
+- [openapi.yaml](openapi.yaml): OpenAPI 3.0.3 description of the REST API.
 
 ## Build
 
-Requirements: CMake 3.22+, a C++14 compiler, oat++ 1.3.x, and Python 3 for the API tests. No database, real vehicle, or network download is needed when using the oat++ source already available in this workspace.
+Requirements: CMake 3.22+, a C++14 compiler, oat++ 1.3.x, SQLite 3 development files, and Python 3 for the API tests. SQLite is open-source, public-domain software and runs as a local database file; no separate database server is needed.
+
+The SQLite runtime library is needed to run the API; the development package is
+needed to compile it. On Ubuntu or WSL, install both if they are not present:
+
+```sh
+sudo apt-get update
+sudo apt-get install libsqlite3-0 libsqlite3-dev
+```
 
 From this directory:
 
 ```sh
-cmake -S . -B build -DOATPP_SOURCE_DIR="$(cd ../external/oatpp && pwd)"
+cmake -S . -B build -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DOATPP_SOURCE_DIR="$(cd ../external/oatpp-1.3.0 && pwd)"
 cmake --build build --parallel 2
 python3 tests/api_tests.py ./build/mini-diagnostics-api
 ```
 
 If you move the project, pass the absolute path to your oat++ source instead. Alternatively, with an installed oat++ package, omit `OATPP_SOURCE_DIR` and set `CMAKE_PREFIX_PATH` to its installation prefix if necessary. Use a fresh build directory when switching dependency sources.
+
+## API documentation
+
+[openapi.yaml](openapi.yaml) describes the endpoints, request and response schemas, status codes, and example payloads. Open it in an OpenAPI viewer or import it into an API client that supports OpenAPI to explore the API interactively.
 
 ## Run
 
@@ -30,11 +45,13 @@ If you move the project, pass the absolute path to your oat++ source instead. Al
 ./build/mini-diagnostics-api
 ```
 
-The default port is `8080`. To choose a different port if it is already in use, pass it as an argument, for example `./build/mini-diagnostics-api 18080`.
+The default port is `8080`, and the default SQLite database file is `ecus.db` in the current working directory. To choose both a different port and database file, pass them as arguments, for example `./build/mini-diagnostics-api 18080 ./demo.db`. If you choose a path inside a directory, that directory must already exist. To start the manual walkthrough with fresh sample data, stop the server and remove the selected database file first.
 
-The server listens only on `127.0.0.1` for local learning (port `8080` by default). Stop it with Ctrl+C. There is no authentication or TLS; do not expose it as a production service. ECU data is held in memory and resets when the server restarts.
+The server listens only on `127.0.0.1` for local learning. Stop it with Ctrl+C. There is no authentication or TLS; do not expose it as a production service. ECU data is persisted in SQLite and remains available after restarting the server. The sample engine and battery ECUs are inserted only when the database is empty.
 
 ## Phase 1: list ECUs
+
+On first startup with a new or empty database, the API seeds the engine and battery ECUs. Later runs reuse the saved records instead of resetting them.
 
 ```sh
 curl -i http://127.0.0.1:8080/api/v1/ecus
@@ -70,7 +87,7 @@ Validation requires non-empty `id`, `name`, and `status`. IDs may use letters, d
 
 - Invalid or missing data returns `400 Bad Request`.
 - Reusing an existing ID returns `409 Conflict`.
-- API errors use a JSON body such as `{"error":"ECU not found"}`.
+- API errors use a JSON body such as `{"error":"ECU not found"}`. Database failures return `500 Internal Server Error`; details are logged by the server rather than returned to the client.
 
 ### Step-by-step Phase 2 walkthrough
 
@@ -118,7 +135,7 @@ Use `18080` in the following examples. If you started the server on the default 
      -d '{"id":"brake","name":"Brake Controller","status":"online"}'
    ```
 
-Created data is held in memory, so it is available while this server process is running and is reset when the server restarts.
+Created data is saved in the configured SQLite file and remains after the server restarts.
 
 ## Phase 3: replace and delete ECU resources
 
@@ -136,22 +153,42 @@ curl -i -X PUT http://127.0.0.1:18080/api/v1/ecus/engine \
 curl -i -X DELETE http://127.0.0.1:18080/api/v1/ecus/engine
 ```
 
-These operations use the same in-memory collection as `GET` and `POST`. Changes disappear when the server restarts.
+These operations update the same SQLite database used by `GET` and `POST`. Changes remain after the server restarts.
+
+### Example responses
+
+A successful `GET /api/v1/ecus/engine` returns `200 OK` with:
+
+```json
+{
+  "id": "engine",
+  "name": "Engine Controller",
+  "status": "online",
+  "firmwareVersion": "1.0.0"
+}
+```
+
+An unknown ECU returns `404 Not Found` with:
+
+```json
+{"error":"ECU not found"}
+```
 
 ## Automated tests
 
-The integration tests launch the API on an available local port and send real HTTP requests. They cover listing, retrieving, creating, replacing, and deleting ECUs, including validation and not-found/conflict responses.
+The integration tests launch the API on an available local port with a separate temporary SQLite file for each test. They cover listing, retrieving, creating, replacing, and deleting ECUs, validation, not-found/conflict responses, and persistence across a server restart.
 
 ```sh
 python3 tests/api_tests.py ./build/mini-diagnostics-api
 ```
 
-The tests are also registered with CTest and can be run from a CMake-aware IDE.
+The tests are also registered with CTest and can be run from a CMake-aware IDE. The generated database file is ignored by Git; do not commit local runtime data.
 
 ## Project structure
 
 - `include/ecu_dto.hpp` describes the JSON data types.
-- `include/diagnostics_controller.hpp` contains the API routes and ECU collection logic.
+- `include/diagnostics_controller.hpp` contains the API routes and request validation.
+- `include/ecu_repository.hpp` and `src/ecu_repository.cpp` isolate the SQLite storage operations.
 - `src/main.cpp` initializes oat++ and wires the server components together.
 - `tests/api_tests.py` verifies the public HTTP behavior without needing another test framework.
 
@@ -161,5 +198,5 @@ The tests are also registered with CTest and can be run from a CMake-aware IDE.
 - `POST` creates a resource from a JSON request body.
 - `PUT` replaces an existing resource; `DELETE` removes one.
 - Path parameters identify a resource; the request body carries new resource data.
-- The in-memory map keeps endpoints working against the same collection.
+- A SQLite repository keeps endpoint behavior consistent and persists data across server restarts.
 - HTTP status codes communicate success and failure.
