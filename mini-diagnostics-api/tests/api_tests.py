@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Black-box HTTP tests for the Mini Diagnostics API."""
+"""Black-box integration tests for the Mini Diagnostics API.
+
+The tests start a fresh server on an available local port, send real HTTP
+requests, and check status codes, headers, JSON responses, and CRUD behavior.
+Each test gets its own server process, so in-memory ECU changes do not leak
+between tests. The server is stopped after each test.
+
+Run from the project directory with:
+    python3 tests/api_tests.py ./build/mini-diagnostics-api
+"""
 
 import json
 import socket
