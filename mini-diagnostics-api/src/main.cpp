@@ -20,6 +20,7 @@
 
 #include OATPP_CODEGEN_BEGIN(DTO)
 
+// Defines the JSON shape shared by ECU responses and POST request bodies.
 class EcuDto : public oatpp::DTO {
     DTO_INIT(EcuDto, DTO)
 
@@ -29,6 +30,7 @@ class EcuDto : public oatpp::DTO {
     DTO_FIELD(String, firmwareVersion);
 };
 
+// Keeps API error responses in a consistent JSON format.
 class ErrorDto : public oatpp::DTO {
     DTO_INIT(ErrorDto, DTO)
 
@@ -45,10 +47,12 @@ public:
         const std::shared_ptr<oatpp::data::mapping::ObjectMapper>& objectMapper)
         : ApiController(objectMapper)
     {
+        // Seed the in-memory collection with sample resources for this demo.
         m_ecus.emplace("engine", makeEcu("engine", "Engine Controller", "1.0.0"));
         m_ecus.emplace("battery", makeEcu("battery", "Battery Controller", "1.0.0"));
     }
 
+    // Collection route: return all ECU resources currently in memory.
     ENDPOINT("GET", "/api/v1/ecus", listEcus)
     {
         auto ecus = oatpp::Vector<oatpp::Object<EcuDto>>::createShared();
@@ -61,6 +65,7 @@ public:
         return createDtoResponse(Status::CODE_200, ecus);
     }
 
+    // Item route: PATH extracts {id} from the URL so the handler can find one ECU.
     ENDPOINT("GET", "/api/v1/ecus/{id}", getEcu, PATH(String, id))
     {
         oatpp::Object<EcuDto> ecu;
@@ -77,8 +82,10 @@ public:
         return createDtoResponse(Status::CODE_200, ecu);
     }
 
+    // Create route: oat++ parses the JSON request body into an EcuDto.
     ENDPOINT("POST", "/api/v1/ecus", createEcu, BODY_DTO(oatpp::Object<EcuDto>, requestEcu))
     {
+        // Reject missing fields and values before storing the new resource.
         if (!requestEcu || !requestEcu->id || requestEcu->id->empty() || !requestEcu->name ||
             requestEcu->name->empty() || !requestEcu->status || requestEcu->status->empty()) {
             return createErrorResponse(Status::CODE_400,
@@ -95,6 +102,7 @@ public:
         }
 
         {
+            // Check and insert under one lock to prevent duplicate IDs in concurrent requests.
             const std::lock_guard<std::mutex> lock(m_mutex);
             if (m_ecus.find(*requestEcu->id) != m_ecus.end()) {
                 return createErrorResponse(Status::CODE_409, "ECU ID already exists");
@@ -102,6 +110,7 @@ public:
             m_ecus.emplace(*requestEcu->id, requestEcu);
         }
 
+        // 201 means a resource was created; Location identifies its new URL.
         auto response = createDtoResponse(Status::CODE_201, requestEcu);
         response->putHeader("Location", "/api/v1/ecus/" + *requestEcu->id);
         return response;
@@ -119,6 +128,7 @@ private:
         return ecu;
     }
 
+    // Keep IDs URL-friendly by allowing only letters, digits, hyphens, and underscores.
     static bool hasValidIdCharacters(const std::string& id)
     {
         return std::all_of(id.begin(), id.end(), [](unsigned char character) {
@@ -134,12 +144,14 @@ private:
         return createDtoResponse(status, error);
     }
 
+    // Demo storage: data is shared by endpoints but lost when the server stops.
     std::map<std::string, oatpp::Object<EcuDto>> m_ecus;
     std::mutex m_mutex;
 };
 
 #include OATPP_CODEGEN_END(ApiController)
 
+// Connect the JSON mapper, route table, HTTP handler, and local TCP listener.
 void runServer(v_uint16 port)
 {
     auto objectMapper = oatpp::parser::json::mapping::ObjectMapper::createShared();
@@ -164,6 +176,7 @@ int main(int argc, char* argv[])
         std::cerr << "Usage: mini-diagnostics-api [port]" << std::endl;
         return 1;
     }
+    // Allow an alternate port for development when the default port is busy.
     if (argc == 2) {
         char* end = nullptr;
         const unsigned long parsedPort = std::strtoul(argv[1], &end, 10);
@@ -174,6 +187,7 @@ int main(int argc, char* argv[])
         port = static_cast<v_uint16>(parsedPort);
     }
 
+    // Initialize oat++ before creating framework objects; destroy it after the server exits.
     oatpp::base::Environment::init();
     int result = 0;
     try {
